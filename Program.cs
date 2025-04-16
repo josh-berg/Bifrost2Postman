@@ -134,12 +134,12 @@ class Program
 
     static string GenerateSampleJsonForType(ITypeSymbol? typeSymbol)
     {
-        var visited = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
-        var sample = GenerateSampleForType(typeSymbol, visited);
+        var path = new Stack<ITypeSymbol>();
+        var sample = GenerateSampleForType(typeSymbol, path);
         return JsonSerializer.Serialize(sample, new JsonSerializerOptions { WriteIndented = true });
     }
 
-    static object? GenerateSampleForType(ITypeSymbol? typeSymbol, HashSet<ITypeSymbol> visited)
+    static object? GenerateSampleForType(ITypeSymbol? typeSymbol, Stack<ITypeSymbol> path)
     {
         if (typeSymbol == null) return null;
 
@@ -148,25 +148,24 @@ class Program
             typeSymbol = underlyingType;
         }
 
-        if (typeSymbol != null && IsSimple(typeSymbol))
+        if (typeSymbol == null) return null;
+
+        if (IsSimple(typeSymbol))
         {
             return GetSampleValue(typeSymbol);
         }
 
-        if (typeSymbol != null && visited.Contains(typeSymbol))
+        if (IsCollection(typeSymbol, out var elementType))
+        {
+            return new[] { GenerateSampleForType(elementType, path) };
+        }
+
+        if (path.Contains(typeSymbol, SymbolEqualityComparer.Default))
         {
             return $"<circular reference to {typeSymbol.Name}>";
         }
 
-        if (typeSymbol != null)
-        {
-            visited.Add(typeSymbol);
-        }
-
-        if (typeSymbol != null && IsCollection(typeSymbol, out var elementType))
-        {
-            return new[] { GenerateSampleForType(elementType, visited) };
-        }
+        path.Push(typeSymbol);
 
         var props = typeSymbol?.GetMembers()
             .OfType<IPropertySymbol>()
@@ -176,12 +175,12 @@ class Program
 
         foreach (var prop in props)
         {
-            dict[prop.Name] = GenerateSampleForType(prop.Type, visited);
+            dict[prop.Name] = GenerateSampleForType(prop.Type, path);
         }
 
         if (typeSymbol != null)
         {
-            visited.Remove(typeSymbol);
+            path.Pop();
         }
         return dict;
     }
