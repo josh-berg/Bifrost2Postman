@@ -10,133 +10,173 @@ class Program
 {
     static void Main(string[] args)
     {
-        if (args.Length == 0)
+        try
         {
-            Console.WriteLine("Usage: PostmanGenerator <path-to-client-root>");
-            return;
-        }
-
-        var clientRootFolderPath = args[0];
-
-        var servicesFolderPath = Path.Combine(clientRootFolderPath, "Services");
-        var binFolderPath = Path.Combine(clientRootFolderPath, "bin", "Debug", "netstandard2.0");
-        var dllFiles = Directory.GetFiles(binFolderPath, "*.dll");
-        var dynamicClientReferences = dllFiles.Select(dll => MetadataReference.CreateFromFile(dll)).ToList();
-
-        var csFiles = Directory.GetFiles(clientRootFolderPath, "*.cs", SearchOption.AllDirectories);
-        var trees = csFiles.Select(file =>
-        {
-            var syntaxTree = CSharpSyntaxTree.ParseText(File.ReadAllText(file));
-            return new { FilePath = file, SyntaxTree = syntaxTree };
-        }).ToList();
-
-        var compilation = CSharpCompilation.Create("PostmanGen", trees.Select(x => x.SyntaxTree).ToList())
-            .AddReferences(MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
-            .AddReferences(MetadataReference.CreateFromFile(typeof(Console).Assembly.Location))
-            .AddReferences(dynamicClientReferences);
-
-        var postmanItemsByFile = new Dictionary<string, List<object>>();
-
-        foreach (var tree in trees)
-        {
-            var semanticModel = compilation.GetSemanticModel(tree.SyntaxTree);
-            var root = tree.SyntaxTree.GetCompilationUnitRoot();
-
-            var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
-            var interfaces = root.DescendantNodes().OfType<InterfaceDeclarationSyntax>();
-            var allTypes = classes.Cast<SyntaxNode>().Concat(interfaces.Cast<SyntaxNode>());
-
-            foreach (var type in allTypes)
+            if (args.Length == 0)
             {
-                var className = type is ClassDeclarationSyntax classDecl
-                    ? classDecl.Identifier.ToString()
-                    : (type as InterfaceDeclarationSyntax)?.Identifier.ToString() ?? "UnknownService";
+                Console.WriteLine("Usage: PostmanGenerator <path to Hudl.Service.Client project root>");
+                return;
+            }
 
-                foreach (var method in type.DescendantNodes().OfType<MethodDeclarationSyntax>())
+            var clientRootFolderPath = args[0];
+
+            var servicesFolderPath = Path.Combine(clientRootFolderPath, "Services");
+            if (!Directory.Exists(servicesFolderPath))
+            {
+                Console.WriteLine("Error: There is no 'Services' folder. Make sure you're in the Hudl.Service.Client folder root.");
+                return;
+            }
+
+            var binFolderPath = Path.Combine(clientRootFolderPath, "bin", "Debug", "netstandard2.0");
+            if (!Directory.Exists(binFolderPath))
+            {
+                Console.WriteLine("Error: The project hasn't been built. Please open the service and build before running this tool.");
+                return;
+            }
+
+            var dllFiles = Directory.GetFiles(binFolderPath, "*.dll");
+            if (dllFiles.Length == 0)
+            {
+                Console.WriteLine("Error: No DLL files found in the bin folder. Ensure the project is correctly built.");
+                return;
+            }
+
+            var dynamicClientReferences = dllFiles.Select(dll => MetadataReference.CreateFromFile(dll)).ToList();
+
+            var csFiles = Directory.GetFiles(clientRootFolderPath, "*.cs", SearchOption.AllDirectories);
+            var trees = csFiles.Select(file =>
+            {
+                var syntaxTree = CSharpSyntaxTree.ParseText(File.ReadAllText(file));
+                return new { FilePath = file, SyntaxTree = syntaxTree };
+            }).ToList();
+
+            var compilation = CSharpCompilation.Create("PostmanGen", trees.Select(x => x.SyntaxTree).ToList())
+                .AddReferences(MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
+                .AddReferences(MetadataReference.CreateFromFile(typeof(Console).Assembly.Location))
+                .AddReferences(dynamicClientReferences);
+
+            var postmanItemsByFile = new Dictionary<string, List<object>>();
+
+            foreach (var tree in trees)
+            {
+                try
                 {
-                    var bifrostAttr = method.AttributeLists
-                        .SelectMany(a => a.Attributes)
-                        .FirstOrDefault(attr => attr.Name.ToString().Contains("BifrostPath"));
+                    var semanticModel = compilation.GetSemanticModel(tree.SyntaxTree);
+                    var root = tree.SyntaxTree.GetCompilationUnitRoot();
 
-                    if (bifrostAttr == null) continue;
+                    var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
+                    var interfaces = root.DescendantNodes().OfType<InterfaceDeclarationSyntax>();
+                    var allTypes = classes.Cast<SyntaxNode>().Concat(interfaces.Cast<SyntaxNode>());
 
-                    var pathExpr = bifrostAttr.ArgumentList?.Arguments.First().ToString().Trim('"');
-                    if (pathExpr == null) continue;
-
-                    var methodName = method.Identifier.ToString();
-                    var paramSymbol = method.ParameterList.Parameters.FirstOrDefault();
-                    var paramTypeSyntax = paramSymbol?.Type;
-                    var paramTypeInfo = paramTypeSyntax != null ? semanticModel.GetTypeInfo(paramTypeSyntax) : default;
-                    var paramTypeName = paramTypeInfo.Type?.ToString() ?? "Unknown";
-
-                    var sampleJson = GenerateSampleJsonForType(paramTypeInfo.Type);
-
-                    if (!postmanItemsByFile.ContainsKey(className))
+                    foreach (var type in allTypes)
                     {
-                        postmanItemsByFile[className] = new List<object>();
-                    }
+                        var className = type is ClassDeclarationSyntax classDecl
+                            ? classDecl.Identifier.ToString()
+                            : (type as InterfaceDeclarationSyntax)?.Identifier.ToString() ?? "UnknownService";
 
-                    postmanItemsByFile[className].Add(new
-                    {
-                        name = methodName,
-                        request = new
+                        foreach (var method in type.DescendantNodes().OfType<MethodDeclarationSyntax>())
                         {
-                            method = "POST",
-                            header = new List<object>
+                            var bifrostAttr = method.AttributeLists
+                                .SelectMany(a => a.Attributes)
+                                .FirstOrDefault(attr => attr.Name.ToString().Contains("BifrostPath"));
+
+                            if (bifrostAttr == null) continue;
+
+                            var pathExpr = bifrostAttr.ArgumentList?.Arguments.First().ToString().Trim('"');
+                            if (pathExpr == null) continue;
+
+                            var methodName = method.Identifier.ToString();
+                            var paramSymbol = method.ParameterList.Parameters.FirstOrDefault();
+                            var paramTypeSyntax = paramSymbol?.Type;
+                            var paramTypeInfo = paramTypeSyntax != null ? semanticModel.GetTypeInfo(paramTypeSyntax) : default;
+                            var paramTypeName = paramTypeInfo.Type?.ToString() ?? "Unknown";
+
+                            var sampleJson = GenerateSampleJsonForType(paramTypeInfo.Type);
+
+                            if (!postmanItemsByFile.ContainsKey(className))
                             {
-                                new { key = "Content-Type", value = "application/json" }
-                            },
-                            url = new
-                            {
-                                raw = pathExpr,
-                                host = new List<string> { "{{Hostname}}:{{Port}}" },
-                                path = pathExpr.Split('/')
-                            },
-                            body = new
-                            {
-                                mode = "raw",
-                                raw = sampleJson
+                                postmanItemsByFile[className] = new List<object>();
                             }
+
+                            postmanItemsByFile[className].Add(new
+                            {
+                                name = methodName,
+                                request = new
+                                {
+                                    method = "POST",
+                                    header = new List<object>
+                                    {
+                                        new { key = "Content-Type", value = "application/json" }
+                                    },
+                                    url = new
+                                    {
+                                        raw = pathExpr,
+                                        host = new List<string> { "{{Hostname}}:{{Port}}" },
+                                        path = pathExpr.Split('/')
+                                    },
+                                    body = new
+                                    {
+                                        mode = "raw",
+                                        raw = sampleJson
+                                    }
+                                }
+                            });
                         }
-                    });
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error processing file {tree.FilePath}: {ex.Message}");
                 }
             }
-        }
 
-        var postmanItems = postmanItemsByFile.Select(kvp => new
-        {
-            name = kvp.Key,
-            item = kvp.Value
-        }).ToList();
-
-        var folderName = new DirectoryInfo(clientRootFolderPath).Name;
-        string serviceName = "Service";
-        if (folderName.StartsWith("Hudl.") && folderName.EndsWith(".Client"))
-        {
-            serviceName = folderName.Substring("Hudl.".Length, folderName.Length - "Hudl.".Length - ".Client".Length);
-        }
-
-        var collection = new
-        {
-            info = new
+            var postmanItems = postmanItemsByFile.Select(kvp => new
             {
-                name = $"Hudl.{serviceName} Bifrost Endpoints",
-                schema = "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-            },
-            item = postmanItems
-        };
+                name = kvp.Key,
+                item = kvp.Value
+            }).ToList();
 
-        var json = JsonSerializer.Serialize(collection, new JsonSerializerOptions { WriteIndented = true });
-        var outputFileName = $"hudl_{serviceName.ToLowerInvariant()}_postman.json";
-        File.WriteAllText(outputFileName, json);
-        Console.WriteLine($"Postman collection generated: {outputFileName}");
+            var folderName = new DirectoryInfo(clientRootFolderPath).Name;
+            string serviceName = "Service";
+            if (folderName.StartsWith("Hudl.") && folderName.EndsWith(".Client"))
+            {
+                serviceName = folderName.Substring("Hudl.".Length, folderName.Length - "Hudl.".Length - ".Client".Length);
+            }
+
+            var collection = new
+            {
+                info = new
+                {
+                    name = $"Hudl.{serviceName} Bifrost Endpoints",
+                    schema = "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+                },
+                item = postmanItems
+            };
+
+            var json = JsonSerializer.Serialize(collection, new JsonSerializerOptions { WriteIndented = true });
+            var outputFileName = $"hudl_{serviceName.ToLowerInvariant()}_postman.json";
+            File.WriteAllText(outputFileName, json);
+            Console.WriteLine($"Postman collection generated: {outputFileName}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Unexpected error: {ex.Message}");
+        }
     }
 
     static string GenerateSampleJsonForType(ITypeSymbol? typeSymbol)
     {
-        var path = new Stack<ITypeSymbol>();
-        var sample = GenerateSampleForType(typeSymbol, path);
-        return JsonSerializer.Serialize(sample, new JsonSerializerOptions { WriteIndented = true });
+        try
+        {
+            var path = new Stack<ITypeSymbol>();
+            var sample = GenerateSampleForType(typeSymbol, path);
+            return JsonSerializer.Serialize(sample, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error generating sample JSON for type: {ex.Message}");
+            return "{}";
+        }
     }
 
     static object? GenerateSampleForType(ITypeSymbol? typeSymbol, Stack<ITypeSymbol> path)
@@ -225,6 +265,7 @@ class Program
 
         if (type is INamedTypeSymbol namedType &&
             namedType.AllInterfaces.Any(i => i.ToDisplayString().StartsWith("System.Collections.Generic.IEnumerable")))
+
         {
             elementType = namedType.TypeArguments.FirstOrDefault();
             return elementType != null;
