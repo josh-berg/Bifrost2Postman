@@ -18,8 +18,10 @@ class Program
                 return;
             }
 
+            // Ex. Hudl.Ticketing.Client
             var clientRootFolderPath = args[0];
 
+            // Ex. Hudl.Ticketing.Client/Services
             var servicesFolderPath = Path.Combine(clientRootFolderPath, "Services");
             if (!Directory.Exists(servicesFolderPath))
             {
@@ -27,6 +29,7 @@ class Program
                 return;
             }
 
+            // TODO: Can we trigger a build from this tool?
             var binFolderPath = Path.Combine(clientRootFolderPath, "bin", "Debug", "netstandard2.0");
             if (!Directory.Exists(binFolderPath))
             {
@@ -41,6 +44,7 @@ class Program
                 return;
             }
 
+            // Grabs all DLLs from target, needed to load up so roslyn can get types
             var dynamicClientReferences = dllFiles.Select(dll => MetadataReference.CreateFromFile(dll)).ToList();
 
             var csFiles = Directory.GetFiles(clientRootFolderPath, "*.cs", SearchOption.AllDirectories);
@@ -50,11 +54,13 @@ class Program
                 return new { FilePath = file, SyntaxTree = syntaxTree };
             }).ToList();
 
+            // Load up all types
             var compilation = CSharpCompilation.Create("PostmanGen", trees.Select(x => x.SyntaxTree).ToList())
                 .AddReferences(MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
                 .AddReferences(MetadataReference.CreateFromFile(typeof(Console).Assembly.Location))
                 .AddReferences(dynamicClientReferences);
 
+            // Grouping endpoints by their service
             var postmanItemsByFile = new Dictionary<string, List<object>>();
 
             foreach (var tree in trees)
@@ -70,12 +76,14 @@ class Program
 
                     foreach (var type in allTypes)
                     {
+                        // Grabs class name (eg. ITicketedEventService)
                         var className = type is ClassDeclarationSyntax classDecl
                             ? classDecl.Identifier.ToString()
                             : (type as InterfaceDeclarationSyntax)?.Identifier.ToString() ?? "UnknownService";
 
                         foreach (var method in type.DescendantNodes().OfType<MethodDeclarationSyntax>())
                         {
+                            // Grabs bifrost route (eg. /bifrost/ticketed-event-service/get-ticketed-event)
                             var bifrostAttr = method.AttributeLists
                                 .SelectMany(a => a.Attributes)
                                 .FirstOrDefault(attr => attr.Name.ToString().Contains("BifrostPath"));
@@ -85,12 +93,16 @@ class Program
                             var pathExpr = bifrostAttr.ArgumentList?.Arguments.First().ToString().Trim('"');
                             if (pathExpr == null) continue;
 
+                            // Grabs method name (eg. GetTicketedEvent)
                             var methodName = method.Identifier.ToString();
+                            // Grabs parameter
                             var paramSymbol = method.ParameterList.Parameters.FirstOrDefault();
+                            // Grabs parameter type
                             var paramTypeSyntax = paramSymbol?.Type;
                             var paramTypeInfo = paramTypeSyntax != null ? semanticModel.GetTypeInfo(paramTypeSyntax) : default;
                             var paramTypeName = paramTypeInfo.Type?.ToString() ?? "Unknown";
 
+                            // Generates the sample JSON
                             var sampleJson = GenerateSampleJsonForType(paramTypeInfo.Type);
 
                             if (!postmanItemsByFile.ContainsKey(className))
@@ -98,6 +110,7 @@ class Program
                                 postmanItemsByFile[className] = new List<object>();
                             }
 
+                            // Adds postman json to the list
                             postmanItemsByFile[className].Add(new
                             {
                                 name = methodName,
@@ -136,6 +149,7 @@ class Program
                 item = kvp.Value
             }).ToList();
 
+            // Builds postman folder
             var folderName = new DirectoryInfo(clientRootFolderPath).Name;
             string serviceName = "Service";
             if (folderName.StartsWith("Hudl.") && folderName.EndsWith(".Client"))
@@ -168,6 +182,7 @@ class Program
     {
         try
         {
+            // Stack is needed to keep track of things we've referenced to not get stuck in a loop
             var path = new Stack<ITypeSymbol>();
             var sample = GenerateSampleForType(typeSymbol, path);
             return JsonSerializer.Serialize(sample, new JsonSerializerOptions { WriteIndented = true });
@@ -183,6 +198,7 @@ class Program
     {
         if (typeSymbol == null) return null;
 
+        // We don't want all the nullable properties (HasValue and such) in postman, so we grab the underlying type (eg. int? -> int) if nullable
         if (IsNullable(typeSymbol, out var underlyingType))
         {
             typeSymbol = underlyingType;
@@ -190,29 +206,34 @@ class Program
 
         if (typeSymbol == null) return null;
 
+        // Checks if simple type
         if (IsSimple(typeSymbol))
         {
             return GetSampleValue(typeSymbol);
         }
 
+        // Checks if collection, if so return a list with one sample value of list type
         if (IsCollection(typeSymbol, out var elementType))
         {
             return new[] { GenerateSampleForType(elementType, path) };
         }
 
+        // Checks if circular reference, if so return a message
         if (path.Contains(typeSymbol, SymbolEqualityComparer.Default))
         {
-            return $"<circular reference to {typeSymbol.Name}>";
+            return $"!!CircularReference {typeSymbol.Name}!!>";
         }
 
         path.Push(typeSymbol);
 
+        // Grab all public properties of the type
         var props = typeSymbol?.GetMembers()
             .OfType<IPropertySymbol>()
             .Where(p => p.DeclaredAccessibility == Accessibility.Public && !p.IsStatic) ?? Enumerable.Empty<IPropertySymbol>();
 
         var dict = new Dictionary<string, object?>();
 
+        // Loop through all properties and generate sample values for them
         foreach (var prop in props)
         {
             dict[prop.Name] = GenerateSampleForType(prop.Type, path);
@@ -225,6 +246,7 @@ class Program
         return dict;
     }
 
+    // Checks if type is a simple type (eg. int, string, etc)
     static bool IsSimple(ITypeSymbol type)
     {
         return type.SpecialType switch
@@ -242,6 +264,7 @@ class Program
         };
     }
 
+    // Magic code that checks if type is nullable (eg. int?)
     static bool IsNullable(ITypeSymbol type, out ITypeSymbol? underlyingType)
     {
         if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T && type is INamedTypeSymbol named && named.TypeArguments.Length == 1)
@@ -253,6 +276,7 @@ class Program
         return false;
     }
 
+    // Checks if type is a collection (eg. IEnumerable<T>, List<T>, etc)
     static bool IsCollection(ITypeSymbol type, out ITypeSymbol? elementType)
     {
         elementType = null;
@@ -274,6 +298,8 @@ class Program
         return false;
     }
 
+    // Gets a sample value for the type (eg. int -> 1, string -> "", etc)
+    // TODO: Can we get faker working in here? (do we want to tho hm)
     static object GetSampleValue(ITypeSymbol type) => type.Name switch
     {
         "String" => "",
