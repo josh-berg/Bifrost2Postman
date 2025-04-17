@@ -143,10 +143,12 @@ class Program
                 }
             }
 
-            var postmanItems = postmanItemsByFile.Select(kvp => new
+            var postmanItems = postmanItemsByFile
+            .OrderBy(kvp => kvp.Key)
+            .Select(kvp => new
             {
                 name = kvp.Key,
-                item = kvp.Value
+                item = kvp.Value.Cast<dynamic>().OrderBy(entry => (string)entry.name).ToList<object>()
             }).ToList();
 
             // Builds postman folder
@@ -226,10 +228,8 @@ class Program
 
         path.Push(typeSymbol);
 
-        // Grab all public properties of the type
-        var props = typeSymbol?.GetMembers()
-            .OfType<IPropertySymbol>()
-            .Where(p => p.DeclaredAccessibility == Accessibility.Public && !p.IsStatic) ?? Enumerable.Empty<IPropertySymbol>();
+        // Grab all public properties of type, include base types
+        var props = GetAllPublicInstanceProperties(typeSymbol);
 
         var dict = new Dictionary<string, object?>();
 
@@ -314,4 +314,35 @@ class Program
         _ when type.TypeKind == TypeKind.Enum => 0,
         _ => "sample"
     };
+
+    static IEnumerable<IPropertySymbol> GetAllPublicInstanceProperties(ITypeSymbol typeSymbol)
+    {
+        var typeHierarchy = new Stack<ITypeSymbol>();
+        var current = typeSymbol;
+
+        // Walk up the inheritance chain and store types in reverse order
+        while (current != null && current.SpecialType == SpecialType.None)
+        {
+            typeHierarchy.Push(current);
+            current = current.BaseType;
+        }
+
+        var properties = new Dictionary<string, IPropertySymbol>();
+
+        while (typeHierarchy.Count > 0)
+        {
+            var type = typeHierarchy.Pop();
+            foreach (var member in type.GetMembers().OfType<IPropertySymbol>())
+            {
+                if (member.DeclaredAccessibility == Accessibility.Public && !member.IsStatic && !properties.ContainsKey(member.Name))
+                {
+                    properties[member.Name] = member;
+                }
+            }
+        }
+
+        return properties.Values;
+    }
+
+
 }
